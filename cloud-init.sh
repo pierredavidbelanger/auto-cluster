@@ -94,21 +94,22 @@ if [ "$role_tag" == 'manager' ]; then
   if [ $joined == 1 ]; then
     # SWARM
     docker swarm init
-    # PORTAINER
-    portainer_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/portainer/admin/password" | jq '.Parameters[0].Value // empty' -r)
-    if [ "$portainer_admin_password" == '' ]; then
-      portainer_admin_password=$(openssl rand -base64 14)
-      aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/portainer/admin/password" --value "$portainer_admin_password" --type String
-      portainer_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/portainer/admin/password" | jq '.Parameters[0].Value // empty' -r)
+    # REMOTE ADMIN
+    remote_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/remote/admin/password" | jq '.Parameters[0].Value // empty' -r)
+    if [ "$remote_admin_password" == '' ]; then
+      remote_admin_password=$(openssl rand -base64 14)
+      aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/remote/admin/password" --value "$remote_admin_password" --type String
+      remote_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/remote/admin/password" | jq '.Parameters[0].Value // empty' -r)
     fi
-    portainer_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$portainer_admin_password" | cut -d ":" -f 2)
+    remote_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$remote_admin_password" | cut -d ":" -f 2)
+    # PORTAINER
     docker service create \
       --name portainer \
       --constraint=node.role==manager \
       --publish 8000:8000 --publish 9000:9000 \
       --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
       portainer/portainer:1.22.1 \
-        --admin-password="$portainer_admin_password_hash"
+        --admin-password="$remote_admin_password_hash"
     # TRAEFIK
     docker service create \
       --name traefik \
