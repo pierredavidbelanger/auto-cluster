@@ -82,6 +82,7 @@ until [ $retry -ge 6 ]; do
   if [ $joined == 0 ]; then
     break
   fi
+  docker swarm leave
   retry=$[$retry+1]
   sleep $retry
 done
@@ -94,21 +95,30 @@ if [ "$role_tag" == 'manager' ]; then
     # SWARM
     docker swarm init
     # PORTAINER
-    curl -L https://downloads.portainer.io/portainer-agent-stack.yml -o /tmp/portainer-agent-stack.yml
-    docker stack deploy --compose-file=/tmp/portainer-agent-stack.yml portainer
+    portainer_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/portainer/admin/password" | jq '.Parameters[0].Value // empty' -r)
+    if [ "$portainer_admin_password" == '' ]; then
+      portainer_admin_password=$(openssl rand -base64 14)
+      aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/portainer/admin/password" --value "$portainer_admin_password" --type String
+      portainer_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/portainer/admin/password" | jq '.Parameters[0].Value // empty' -r)
+    fi
+    portainer_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$portainer_admin_password" | cut -d ":" -f 2)
+    docker service create \
+      --name portainer \
+      --constraint=node.role==manager \
+      --publish 8000:8000 --publish 9000:9000 \
+      --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+      portainer/portainer:1.22.1 \
+        --admin-password="$portainer_admin_password_hash"
     # TRAEFIK
     docker service create \
       --name traefik \
       --constraint=node.role==manager \
       --publish 80:80 --publish 8080:8080 \
-      --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
-      --network traefik-net \
-      traefik \
-        --docker \
-        --docker.swarmmode \
-        --docker.domain=docker.localhost \
-        --docker.watch \
-        --api
+      traefik:v2.0 \
+        --providers.docker.swarmMode=true \
+        --providers.docker.endpoint='tcp://127.0.0.1:2377' \
+        --providers.docker.exposedbydefault=false \
+        --api.insecure=true
   fi
 fi
 
