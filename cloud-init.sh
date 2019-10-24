@@ -87,12 +87,35 @@ until [ $retry -ge 6 ]; do
 done
 
 ##########
-# INIT/ADVERTISE SWARM
+# INIT SWARM
 
 if [ "$role_tag" == 'manager' ]; then
   if [ $joined == 1 ]; then
+    # SWARM
     docker swarm init
+    # PORTAINER
+    curl -L https://downloads.portainer.io/portainer-agent-stack.yml -o /tmp/portainer-agent-stack.yml
+    docker stack deploy --compose-file=/tmp/portainer-agent-stack.yml portainer
+    # TRAEFIK
+    docker service create \
+      --name traefik \
+      --constraint=node.role==manager \
+      --publish 80:80 --publish 8080:8080 \
+      --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+      --network traefik-net \
+      traefik \
+        --docker \
+        --docker.swarmmode \
+        --docker.domain=docker.localhost \
+        --docker.watch \
+        --api
   fi
+fi
+
+##########
+# ADVERTISE SWARM
+
+if [ "$role_tag" == 'manager' ]; then
   token_manager=$(docker swarm join-token manager --quiet)
   token_worker=$(docker swarm join-token worker --quiet)
   aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/token" --value "$token_manager" --type String --overwrite
