@@ -90,7 +90,7 @@ done
 # INIT/ADVERTISE SWARM
 
 if [ "$role_tag" == 'manager' ]; then
-  if [ $joined == 0 ]; then
+  if [ $joined == 1 ]; then
     docker swarm init
   fi
   token_manager=$(docker swarm join-token manager --quiet)
