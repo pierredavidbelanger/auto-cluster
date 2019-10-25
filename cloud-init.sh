@@ -57,6 +57,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 
 usermod -aG docker ubuntu
 
+mkdir -p /etc/systemd/system/docker.service.d
 cat <<EOF > /etc/systemd/system/docker.service.d/override.conf
 [Service]
 ExecStart=
@@ -148,15 +149,15 @@ if [ "$role_tag" == 'manager' ]; then
         --providers.docker.exposedbydefault=false \
         --api.insecure=true
 
-    # SOCKS5
+    # PROXY
     docker service create \
-      --name socks5 \
+      --name proxy \
       --constraint=node.role==manager \
-      --publish 8888:1080 \
+      --publish 8888:8888 \
       --host "docker:$private_ip" \
-      --env PROXY_USER=admin \
-      --env PROXY_PASSWORD="$user_admin_password" \
-      serjs/go-socks5-proxy
+      --env BASIC_AUTH_USER=admin \
+      --env BASIC_AUTH_PASS="$user_admin_password" \
+      pierredavidbelanger/basic-auth-forward-proxy
   fi
 fi
 
