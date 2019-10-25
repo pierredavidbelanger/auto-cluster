@@ -136,16 +136,6 @@ if [ "$role_tag" == 'manager' ]; then
         --providers.docker.endpoint='tcp://127.0.0.1:2377' \
         --providers.docker.exposedbydefault=false \
         --api.insecure=true
-
-    # DOCKER API
-    docker service create \
-      --name docker-proxy \
-      --constraint=node.role==manager \
-      --publish 2378:80 \
-      --env BASIC_AUTH_USERNAME=admin \
-      --env BASIC_AUTH_PASSWORD="$user_admin_password" \
-      --env PROXY_PASS="http://$private_ip:2375" \
-      quay.io/dtan4/nginx-basic-auth-proxy
   fi
 fi
 
