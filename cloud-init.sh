@@ -55,8 +55,6 @@ add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(
 apt-get update -y
 apt-get install -y docker-ce docker-ce-cli containerd.io
 
-usermod -aG docker ubuntu
-
 mkdir -p /etc/systemd/system/docker.service.d
 cat <<EOF > /etc/systemd/system/docker.service.d/override.conf
 [Service]
@@ -84,6 +82,8 @@ systemctl daemon-reload
 systemctl restart docker.service
 systemctl enable docker.service
 systemctl restart docker.service
+
+usermod -aG docker ubuntu
 
 ##########
 # JOIN SWARM
@@ -129,9 +129,13 @@ if [ "$role_tag" == 'manager' ]; then
     fi
     user_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$user_admin_password" | cut -d ":" -f 2)
 
+    # NETWORK
+    docker network create -d overlay --attachable managers
+
     # PORTAINER
     docker service create \
       --name portainer \
+      --network managers \
       --constraint=node.role==manager \
       --publish 8000:8000 --publish 9000:9000 \
       --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
@@ -141,6 +145,7 @@ if [ "$role_tag" == 'manager' ]; then
     # TRAEFIK
     docker service create \
       --name traefik \
+      --network managers \
       --constraint=node.role==manager \
       --publish 80:80 --publish 8080:8080 \
       traefik:v2.0 \
@@ -152,6 +157,7 @@ if [ "$role_tag" == 'manager' ]; then
     # PROXY
     docker service create \
       --name proxy \
+      --network managers \
       --constraint=node.role==manager \
       --publish 8888:8888 \
       --host "docker:$private_ip" \
