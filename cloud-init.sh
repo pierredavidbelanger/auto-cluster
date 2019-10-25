@@ -123,7 +123,7 @@ if [ "$role_tag" == 'manager' ]; then
     # USER ADMIN
     user_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/admin/password" | jq '.Parameters[0].Value // empty' -r)
     if [ "$user_admin_password" == '' ]; then
-      user_admin_password=$(openssl rand -base64 14)
+      user_admin_password=$(openssl rand 256 | sha256sum | head -c 32)
       aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/user/admin/password" --value "$user_admin_password" --type String
       user_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/admin/password" | jq '.Parameters[0].Value // empty' -r)
     fi
