@@ -1,9 +1,17 @@
 #!/bin/sh
 
 ##########
-# INSTALL
+# UPDATE
 
-yum install -y jq wget awscli docker amazon-efs-utils
+apt-get update -y
+
+apt-get install -y awscli \
+  jq \
+  apt-transport-https \
+  ca-certificates \
+  curl \
+  gnupg-agent \
+  software-properties-common
 
 ##########
 # VARS
@@ -13,13 +21,14 @@ region=$(curl -fs http://169.254.169.254/latest/dynamic/instance-identity/docume
 public_ip=$(curl -fs http://169.254.169.254/latest/meta-data/public-ipv4)
 private_ip=$(curl -fs http://169.254.169.254/latest/meta-data/local-ipv4)
 private_hostname=$(curl -fs http://169.254.169.254/latest/meta-data/local-hostname)
-asg_name=$(aws autoscaling describe-auto-scaling-instances --region "$region" --instance-ids "$instance_id" --query 'AutoScalingInstances[].AutoScalingGroupName' --output text)
 
 ##########
 # CONFIGS
 
+asg_name=$(aws autoscaling describe-auto-scaling-instances --region "$region" --instance-ids "$instance_id" --query 'AutoScalingInstances[].AutoScalingGroupName' --output text)
 cluster_tag=""
 role_tag=""
+
 if [ "$asg_name" != "" ]; then
   cluster_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
   role_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=role' --query 'Tags[].Value' --output text)
@@ -28,6 +37,7 @@ else
   cluster_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
   role_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=role' --query 'Tags[].Value' --output text)
 fi
+
 if [ "$cluster_tag" == '' ]; then
   cluster_tag='default'
 fi
@@ -38,7 +48,16 @@ fi
 ##########
 # DOCKER
 
-usermod -a -G docker ec2-user
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+apt-key fingerprint 0EBFCD88 | grep Docker
+add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io
+
+usermod -aG docker ubuntu
+
+systemctl enable docker
 
 cat <<EOF > /etc/docker/daemon.json
 {
@@ -55,22 +74,12 @@ EOF
 service docker restart
 
 ##########
-# EFS
-
-efs_ids=($(aws efs describe-file-systems --region "$region" --query 'FileSystems[].FileSystemId' --output text))
-for efs_id in "${efs_ids[@]}"; do
-    efs_name=$(aws efs describe-file-systems --region "$region" --file-system-id "$efs_id" --query 'FileSystems[].Name' --output text)
-    mkdir -p "/mnt/efs/$efs_name"
-    echo "$efs_id:/ /mnt/efs/$efs_name efs" >> /etc/fstab
-    mount "/mnt/efs/$efs_name"
-done
-
-##########
 # JOIN SWARM
 
 joined=1
 retry=0
 until [ $retry -ge 6 ]; do
+
   manager_host=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/host" | jq '.Parameters[0].Value // empty' -r)
   if [ "$manager_host" != '' ]; then
     join_token=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/$role_tag/token" | jq '.Parameters[0].Value // empty' -r)
@@ -79,10 +88,13 @@ until [ $retry -ge 6 ]; do
       joined=$?
     fi
   fi
+
   if [ $joined == 0 ]; then
     break
   fi
+
   docker swarm leave
+
   retry=$[$retry+1]
   sleep $retry
 done
@@ -92,16 +104,19 @@ done
 
 if [ "$role_tag" == 'manager' ]; then
   if [ $joined == 1 ]; then
+
     # SWARM
     docker swarm init
-    # REMOTE ADMIN
-    remote_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/remote/admin/password" | jq '.Parameters[0].Value // empty' -r)
-    if [ "$remote_admin_password" == '' ]; then
-      remote_admin_password=$(openssl rand -base64 14)
-      aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/remote/admin/password" --value "$remote_admin_password" --type String
-      remote_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/remote/admin/password" | jq '.Parameters[0].Value // empty' -r)
+
+    # USER ADMIN
+    user_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/admin/password" | jq '.Parameters[0].Value // empty' -r)
+    if [ "$user_admin_password" == '' ]; then
+      user_admin_password=$(openssl rand -base64 14)
+      aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/user/admin/password" --value "$user_admin_password" --type String
+      user_admin_password=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/admin/password" | jq '.Parameters[0].Value // empty' -r)
     fi
-    remote_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$remote_admin_password" | cut -d ":" -f 2)
+    user_admin_password_hash=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$user_admin_password" | cut -d ":" -f 2)
+
     # PORTAINER
     docker service create \
       --name portainer \
@@ -109,7 +124,8 @@ if [ "$role_tag" == 'manager' ]; then
       --publish 8000:8000 --publish 9000:9000 \
       --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
       portainer/portainer:1.22.1 \
-        --admin-password="$remote_admin_password_hash"
+        --admin-password="$user_admin_password_hash"
+
     # TRAEFIK
     docker service create \
       --name traefik \
@@ -120,6 +136,16 @@ if [ "$role_tag" == 'manager' ]; then
         --providers.docker.endpoint='tcp://127.0.0.1:2377' \
         --providers.docker.exposedbydefault=false \
         --api.insecure=true
+
+    # DOCKER API
+    docker service create \
+      --name docker-proxy \
+      --constraint=node.role==manager \
+      --publish 2378:80 \
+      --env BASIC_AUTH_USERNAME=admin \
+      --env BASIC_AUTH_PASSWORD="$user_admin_password" \
+      --env PROXY_PASS="http://$private_ip:2375" \
+      quay.io/dtan4/nginx-basic-auth-proxy
   fi
 fi
 
@@ -132,4 +158,38 @@ if [ "$role_tag" == 'manager' ]; then
   aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/token" --value "$token_manager" --type String --overwrite
   aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/worker/token" --value "$token_worker" --type String --overwrite
   aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/host" --value "$private_hostname" --type String --overwrite
+fi
+
+##########
+# SSH USER
+
+if [ "$role_tag" == 'manager' ]; then
+
+  useradd manager -m -s /bin/bash
+  usermod -aG docker manager
+  mkdir -p /home/manager/.ssh
+
+  user_manager_id_rsa=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/manager/id_rsa" | jq '.Parameters[0].Value // empty' -r)
+  user_manager_id_rsa_pub=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/manager/id_rsa.pub" | jq '.Parameters[0].Value // empty' -r)
+  if [ "$user_manager_id_rsa" == '' ] || [ "$user_manager_id_rsa_pub" == '' ]; then
+    ssh-keygen -N '' -t rsa -b 4096 -f /home/manager/.ssh/id_rsa
+    user_manager_id_rsa=$(cat /home/manager/.ssh/id_rsa)
+    user_manager_id_rsa_pub=$(cat /home/manager/.ssh/id_rsa.pub)
+    aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/user/manager/id_rsa" --value "$user_manager_id_rsa" --type String
+    aws ssm put-parameter --region "$region" --name "/swarm/$cluster_tag/manager/user/manager/id_rsa.pub" --value "$user_manager_id_rsa_pub" --type String
+    user_manager_id_rsa=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/manager/id_rsa" | jq '.Parameters[0].Value // empty' -r)
+    user_manager_id_rsa_pub=$(aws ssm get-parameters --region "$region" --names "/swarm/$cluster_tag/manager/user/manager/id_rsa.pub" | jq '.Parameters[0].Value // empty' -r)
+  fi
+
+  echo "$user_manager_id_rsa" > /home/manager/.ssh/id_rsa
+  echo "$user_manager_id_rsa_pub" > /home/manager/.ssh/id_rsa.pub
+
+  cat /home/manager/.ssh/id_rsa.pub > /home/manager/.ssh/authorized_keys
+
+  chown -R manager:manager /home/manager/.ssh
+
+  chmod 700 /home/manager/.ssh
+  chmod 644 /home/manager/.ssh/id_rsa.pub
+  chmod 600 /home/manager/.ssh/id_rsa
+  chmod 600 /home/manager/.ssh/authorized_keys
 fi
