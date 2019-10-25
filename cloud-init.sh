@@ -57,10 +57,18 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 
 usermod -aG docker ubuntu
 
-systemctl enable docker
+cat <<EOF > /etc/systemd/system/docker.service.d/override.conf
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd
+EOF
 
 cat <<EOF > /etc/docker/daemon.json
 {
+  "hosts": [
+    "unix:///var/run/docker.sock",
+    "tcp://$private_ip:2375"
+  ],
   "log-driver": "awslogs",
   "log-opts": {
     "awslogs-region": "$region",
@@ -71,7 +79,10 @@ cat <<EOF > /etc/docker/daemon.json
 }
 EOF
 
-service docker restart
+systemctl daemon-reload
+systemctl restart docker.service
+systemctl enable docker.service
+systemctl restart docker.service
 
 ##########
 # JOIN SWARM
@@ -133,19 +144,19 @@ if [ "$role_tag" == 'manager' ]; then
       --publish 80:80 --publish 8080:8080 \
       traefik:v2.0 \
         --providers.docker.swarmMode=true \
-        --providers.docker.endpoint='tcp://127.0.0.1:2377' \
+        --providers.docker.endpoint=tcp://127.0.0.1:2377 \
         --providers.docker.exposedbydefault=false \
         --api.insecure=true
 
-    # DOCKER API
+    # SOCKS5
     docker service create \
-      --name docker-proxy \
+      --name socks5 \
       --constraint=node.role==manager \
-      --publish 2378:80 \
-      --env BASIC_AUTH_USERNAME=admin \
-      --env BASIC_AUTH_PASSWORD="$user_admin_password" \
-      --env PROXY_PASS="http://$private_ip:2375" \
-      quay.io/dtan4/nginx-basic-auth-proxy
+      --publish 8888:1080 \
+      --host "docker:$private_ip" \
+      --env PROXY_USER=admin \
+      --env PROXY_PASSWORD="$user_admin_password" \
+      serjs/go-socks5-proxy
   fi
 fi
 
