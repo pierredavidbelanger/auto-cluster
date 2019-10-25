@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 ##########
 # UPDATE
@@ -95,7 +95,7 @@ until [ $retry -ge 6 ]; do
 
   docker swarm leave
 
-  retry=`expr $retry + 1`
+  retry=$[$retry + 1]
   sleep $retry
 done
 
