@@ -127,6 +127,7 @@ for node_name in "\${node_names[@]}"; do
 done
 EOF
   chmod +x /etc/cron.hourly/k3s-00-garbage-collector.sh
+  /etc/cron.hourly/k3s-00-garbage-collector.sh
   systemctl restart crond.service
 fi
 
@@ -141,5 +142,6 @@ aws s3 sync --region "$region" "/var/lib/rancher/k3s/server" "s3://$bucket_tag/$
    > /var/log/k3s-backup 2>&1
 EOF
   chmod +x /etc/cron.hourly/k3s-01-backup.sh
+  /etc/cron.hourly/k3s-01-backup.sh
   systemctl restart crond.service
 fi
