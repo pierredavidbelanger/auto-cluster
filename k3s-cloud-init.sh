@@ -22,18 +22,21 @@ cluster_tag=""
 role_tag=""
 bucket_tag=""
 zone_tag=""
+daemon_tag=""
 
 if [ "$asg_name" != "" ]; then
   cluster_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
   role_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=role' --query 'Tags[].Value' --output text)
   bucket_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=bucket' --query 'Tags[].Value' --output text)
   zone_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=zone' --query 'Tags[].Value' --output text)
+  daemon_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=daemon' --query 'Tags[].Value' --output text)
 else
   asg_name='none'
   cluster_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
   role_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=role' --query 'Tags[].Value' --output text)
   bucket_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=bucket' --query 'Tags[].Value' --output text)
   zone_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=zone' --query 'Tags[].Value' --output text)
+  daemon_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=daemon' --query 'Tags[].Value' --output text)
 fi
 
 if [ "$cluster_tag" == '' ]; then
@@ -44,6 +47,31 @@ if [ "$role_tag" == '' ]; then
 fi
 if [ "$zone_tag" == '' ]; then
   zone_tag='k3s.local'
+fi
+if [ "$daemon_tag" == '' ]; then
+  daemon_tag='default'
+fi
+
+##########
+# DOCKER
+
+if [ "$daemon_tag" == 'docker' ]; then
+  yum install -y docker
+  usermod -a -G docker ec2-user
+  cat <<EOF > /etc/docker/daemon.json
+{
+  "log-driver": "awslogs",
+  "log-opts": {
+    "awslogs-region": "$region",
+    "awslogs-group": "/k3s/$cluster_tag",
+    "awslogs-create-group": "true",
+    "tag": "{{.Name}}/{{.ID}}/$instance_id"
+  }
+}
+EOF
+  systemctl enable docker.service
+  systemctl daemon-reload
+  systemctl restart docker.service
 fi
 
 ##########
@@ -70,6 +98,9 @@ fi
 
 export INSTALL_K3S_VERSION='v0.9.1'
 export INSTALL_K3S_EXEC=""
+if [ "$daemon_tag" == "docker" ]; then
+  export INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC --docker"
+fi
 if [ "$role_tag" == 'manager' ]; then
   storage_endpoint=$(aws ssm get-parameters --region "$region" --names "/k3s/$cluster_tag/manager/storage-endpoint" | jq '.Parameters[0].Value // empty' -r)
   if [ "$storage_endpoint" != '' ]; then
