@@ -108,7 +108,7 @@ if [ "$role_tag" == 'manager' ]; then
   fi
   export INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC --http-listen-port 6080"
 else
-  export K3S_URL="https://manager.$cluster_tag.k3s.local:6443"
+  export K3S_URL="https://manager.$cluster_tag.$zone_tag:6443"
 fi
 
 export K3S_CLUSTER_SECRET="$cluster_secret"
