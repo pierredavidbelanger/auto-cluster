@@ -1,7 +1,5 @@
 #!/bin/bash -x
 
-#yum update -y
-
 yum install -y jq curl awscli
 
 ##########
@@ -23,6 +21,7 @@ role_tag=""
 bucket_tag=""
 zone_tag=""
 daemon_tag=""
+secret_tag=""
 
 if [ "$asg_name" != "" ]; then
   cluster_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
@@ -30,6 +29,7 @@ if [ "$asg_name" != "" ]; then
   bucket_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=bucket' --query 'Tags[].Value' --output text)
   zone_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=zone' --query 'Tags[].Value' --output text)
   daemon_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=daemon' --query 'Tags[].Value' --output text)
+  secret_tag=$(aws autoscaling describe-tags --region "$region" --filters "Name=auto-scaling-group,Values=$asg_name" 'Name=key,Values=secret' --query 'Tags[].Value' --output text)
 else
   asg_name='none'
   cluster_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=cluster' --query 'Tags[].Value' --output text)
@@ -37,6 +37,7 @@ else
   bucket_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=bucket' --query 'Tags[].Value' --output text)
   zone_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=zone' --query 'Tags[].Value' --output text)
   daemon_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=daemon' --query 'Tags[].Value' --output text)
+  secret_tag=$(aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$instance_id" 'Name=key,Values=secret' --query 'Tags[].Value' --output text)
 fi
 
 if [ "$cluster_tag" == '' ]; then
@@ -51,6 +52,9 @@ fi
 if [ "$daemon_tag" == '' ]; then
   daemon_tag='default'
 fi
+if [ "$secret_tag" == '' ]; then
+  secret_tag='179446360150828c1c5b421a9342d0b48f814bcf31a314fe6134f75214a9c64a'
+fi
 
 ##########
 # DOCKER
@@ -64,7 +68,6 @@ if [ "$daemon_tag" == 'docker' ]; then
   "log-opts": {
     "awslogs-region": "$region",
     "awslogs-group": "/k3s/$cluster_tag",
-    "awslogs-create-group": "true",
     "tag": "{{.Name}}/{{.ID}}/$instance_id"
   }
 }
@@ -83,38 +86,32 @@ if [ "$role_tag" == 'manager' ] && [ "$bucket_tag" != '' ]; then
 fi
 
 ##########
-# CLUSTER SECRET
-
-cluster_secret_param="/k3s/$cluster_tag/cluster/secret"
-cluster_secret=$(aws ssm get-parameters --region "$region" --names "$cluster_secret_param" | jq '.Parameters[0].Value // empty' -r)
-if [ "$cluster_secret" == '' ]; then
-  cluster_secret=$(openssl rand 256 | sha256sum | head -c 64)
-  aws ssm put-parameter --region "$region" --name "$cluster_secret_param" --value "$cluster_secret" --type String
-  cluster_secret=$(aws ssm get-parameters --region "$region" --names "$cluster_secret_param" | jq '.Parameters[0].Value // empty' -r)
-fi
-
-##########
 # K3S
 
-export INSTALL_K3S_VERSION='v0.9.1'
-export INSTALL_K3S_EXEC=""
-if [ "$daemon_tag" == "docker" ]; then
-  export INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC --docker"
-fi
+export K3S_ARGS=""
+
 if [ "$role_tag" == 'manager' ]; then
-  storage_endpoint=$(aws ssm get-parameters --region "$region" --names "/k3s/$cluster_tag/manager/storage-endpoint" | jq '.Parameters[0].Value // empty' -r)
-  if [ "$storage_endpoint" != '' ]; then
-    export INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC --storage-endpoint '$storage_endpoint'"
-  fi
-  export INSTALL_K3S_EXEC="$INSTALL_K3S_EXEC --http-listen-port 6080"
+  export K3S_ARGS="$K3S_ARGS server"
 else
-  export K3S_URL="https://manager.$cluster_tag.$zone_tag:6443"
+  export K3S_ARGS="$K3S_ARGS agent"
+  export K3S_ARGS="$K3S_ARGS --server https://manager.$cluster_tag.$zone_tag:6443"
 fi
 
-export K3S_CLUSTER_SECRET="$cluster_secret"
-export K3S_NODE_NAME="$instance_id"
+if [ "$daemon_tag" == "docker" ]; then
+  export K3S_ARGS="$K3S_ARGS --docker"
+fi
 
-curl -sfL https://get.k3s.io | sh -
+INSTALL_K3S_VERSION='v1.0.0' \
+  curl -sfL https://get.k3s.io | sh -s - \
+    $K3S_ARGS \
+    --cluster-secret "$secret_tag" \
+    --node-name "$instance_id" \
+    --node-label "asg=$asg_name" \
+    --node-label "cluster=$cluster_tag" \
+    --node-label "role=$role_tag" \
+    --node-label "bucket=$bucket_tag" \
+    --node-label "zone=$zone_tag" \
+    --node-label "daemon=$daemon_tag"
 
 echo '' >> /root/.bashrc
 echo 'export PATH="$PATH:/usr/local/bin"' >> /root/.bashrc
