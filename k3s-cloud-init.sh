@@ -101,7 +101,7 @@ if [ "$daemon_tag" == "docker" ]; then
   export K3S_ARGS="$K3S_ARGS --docker"
 fi
 
-INSTALL_K3S_VERSION='v1.0.0' \
+INSTALL_K3S_VERSION='v1.17.3+k3s1' \
   curl -sfL https://get.k3s.io | sh -s - \
     $K3S_ARGS \
     --cluster-secret "$secret_tag" \
